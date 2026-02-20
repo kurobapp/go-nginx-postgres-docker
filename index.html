@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="ja">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>最終課題：発展的な環境構築を伴うサーバ構築手順書</title>
+        <style>
+            body {
+                font-family:
+                    "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN",
+                    "Hiragino Sans", Meiryo, sans-serif;
+                line-height: 1.6;
+                max-width: 900px;
+                margin: 0 auto;
+                padding: 20px;
+                color: #333;
+            }
+            h1 {
+                color: #2c3e50;
+                border-bottom: 2px solid #3498db;
+                padding-bottom: 10px;
+                font-size: 1.8em;
+            }
+            h2 {
+                color: #2980b9;
+                border-bottom: 1px solid #bdc3c7;
+                padding-bottom: 5px;
+                margin-top: 40px;
+                font-size: 1.4em;
+            }
+            h3 {
+                color: #34495e;
+                margin-top: 30px;
+                font-size: 1.2em;
+            }
+            p,
+            li {
+                margin-bottom: 10px;
+            }
+            .code-container {
+                position: relative;
+                margin-bottom: 20px;
+            }
+            pre {
+                background-color: #282c34;
+                color: #abb2bf;
+                padding: 15px;
+                padding-top: 40px;
+                border-radius: 6px;
+                overflow-x: auto;
+                border: 1px solid #e9ecef;
+                margin: 0;
+            }
+            code {
+                font-family: Consolas, Monaco, monospace;
+                font-size: 0.95em;
+            }
+            p code,
+            li code {
+                background-color: #f1f3f5;
+                color: #e83e8c;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+            .copy-btn {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                background-color: #4caf50;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: bold;
+                transition: background-color 0.2s;
+            }
+            .copy-btn:hover {
+                background-color: #45a049;
+            }
+            .copy-btn.copied {
+                background-color: #3498db;
+            }
+            table {
+                border-collapse: collapse;
+                width: 100%;
+                margin-bottom: 20px;
+                background-color: #fff;
+            }
+            th,
+            td {
+                border: 1px solid #dee2e6;
+                padding: 12px;
+                text-align: left;
+            }
+            th {
+                background-color: #f8f9fa;
+                font-weight: bold;
+            }
+            .note {
+                background-color: #fff3cd;
+                border-left: 4px solid #ffeeba;
+                padding: 10px;
+                margin: 15px 0;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>最終課題：発展的な環境構築を伴うサーバ構築手順書</h1>
+        <p>
+            <strong
+                >テーマ：Go言語とDocker
+                Composeを用いた高信頼性Webシステムの構築</strong
+            >
+        </p>
+
+        <h2>1. 目的と完成条件の定義</h2>
+        <p>
+            本手順書は、初期状態のLinux環境から、Docker
+            Composeを用いた複数コンテナ（Web、App、DB）によるマイクロサービス環境を完全再現することを目的とする。
+        </p>
+        <ul>
+            <li>
+                <strong>追加した発展要素：</strong>
+                逆プロキシ＋TLS終端（Nginx）、およびDocker
+                Composeによる複数コンテナ構成
+            </li>
+            <li>
+                <strong>完成条件 1：</strong>
+                <code>curl -k https://localhost/</code> にアクセスし、「Hello,
+                Professional Server!」が返却されること。
+            </li>
+            <li>
+                <strong>完成条件 2：</strong>
+                <code>curl -k https://localhost/health</code> にアクセスし、「OK
+                - Database
+                Connected」が返却され、DB連携が正常に動作していること。
+            </li>
+        </ul>
+
+        <h2>2. 前提条件</h2>
+        <ul>
+            <li>
+                <strong>対象OS：</strong> Ubuntu 22.04 LTS
+                (クリーンインストール状態を想定)
+            </li>
+            <li>
+                <strong>実行環境：</strong> ローカルVM または
+                パブリッククラウド（AWS EC2等）
+            </li>
+            <li>
+                <strong>利用ツール：</strong> <code>apt</code>,
+                <code>ufw</code>, <code>docker</code>,
+                <code>docker compose</code>, <code>openssl</code>
+            </li>
+            <li>
+                <strong>ネットワーク条件：</strong> TCP
+                22(SSH)、80(HTTP)、443(HTTPS) の通信が許可されていること。
+            </li>
+        </ul>
+
+        <h2>3. 全体構成図とポート設計</h2>
+        <p></p>
+        <p>
+            外部からの通信はすべてNginxが受け付け、TLS終端を行った上で内部のGoアプリケーションにプロキシする。データベースは外部に公開しない。
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>コンポーネント</th>
+                    <th>役割</th>
+                    <th>ホスト公開ポート</th>
+                    <th>コンテナ内ポート</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Web (Nginx)</strong></td>
+                    <td>リバースプロキシ、TLS終端</td>
+                    <td>80, 443</td>
+                    <td>80, 443</td>
+                </tr>
+                <tr>
+                    <td><strong>App (Go)</strong></td>
+                    <td>アプリケーションロジック</td>
+                    <td>非公開</td>
+                    <td>8080</td>
+                </tr>
+                <tr>
+                    <td><strong>DB (PostgreSQL)</strong></td>
+                    <td>データの永続化</td>
+                    <td>非公開</td>
+                    <td>5432</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>4. 事前準備（パッケージ更新とファイアウォール）</h2>
+        <p>
+            OSを最新状態にし、UFW（Uncomplicated
+            Firewall）で必要な通信のみを許可する。
+        </p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># パッケージリストの更新
+sudo apt-get update
+# インストール済みパッケージのアップグレード
+sudo apt-get upgrade -y
+
+# 全ての着信通信をデフォルトで拒否
+sudo ufw default deny incoming
+# 全ての発信通信をデフォルトで許可
+sudo ufw default allow outgoing
+# SSH通信の許可
+sudo ufw allow 22/tcp
+# HTTP通信の許可
+sudo ufw allow 80/tcp
+# HTTPS通信の許可
+sudo ufw allow 443/tcp
+# ファイアウォールの有効化（確認省略）
+sudo ufw --force enable
+# 設定状態の確認
+sudo ufw status</code></pre>
+        </div>
+
+        <h2>5. 構築手順</h2>
+
+        <h3>5.1. Docker Engineのインストール</h3>
+        <p>
+            公式リポジトリから最新版のDockerとDocker Composeをインストールする。
+        </p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># 必須パッケージのインストール
+sudo apt-get install -y ca-certificates curl gnupg
+# キーリング用ディレクトリの作成
+sudo install -m 0755 -d /etc/apt/keyrings
+# Dockerの公式GPGキーをダウンロード
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+# キーの読み取り権限を付与
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Dockerリポジトリの追加
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# リポジトリ更新とDockerのインストール
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 現在のユーザーをdockerグループに追加（sudoなしでdocker実行可能にする）
+sudo usermod -aG docker $USER</code></pre>
+        </div>
+        <div class="note">
+            ※
+            グループの変更を反映させるため、ここで一度ターミナルからログアウトし、再ログインすること。
+        </div>
+
+        <h3>5.2. プロジェクトディレクトリと環境変数の作成</h3>
+        <p>
+            機密情報はソースコードやComposeファイルに直接書かず、<code
+                >.env</code
+            >
+            ファイルに分離して権限を制限する。
+        </p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># プロジェクトのルートおよびサブディレクトリの作成
+mkdir -p ~/advanced-server/app ~/advanced-server/nginx/certs
+# プロジェクトディレクトリへ移動
+cd ~/advanced-server
+
+# 環境変数ファイルの作成
+cat &lt;&lt; 'EOF' &gt; .env
+POSTGRES_USER=app_user
+POSTGRES_PASSWORD=secure_password_123
+POSTGRES_DB=app_database
+EOF
+
+# 所有者のみ読み書き可能に権限を変更（セキュリティ配慮）
+chmod 600 .env</code></pre>
+        </div>
+
+        <h3>5.3. アプリケーションコードの実装 (Go)</h3>
+        <p>
+            DBコンテナの起動遅延に対応するため、接続の自動再試行ロジックを実装する。
+        </p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># main.go の作成
+cat &lt;&lt; 'EOF' &gt; app/main.go
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	_ "github.com/lib/pq"
+)
+
+func main() {
+	connStr := fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
+		os.Getenv("DB_HOST"), os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"))
+
+	var db *sql.DB
+	var err error
+
+	// DB接続再試行ロジック
+	for i := 0; i &lt; 10; i++ {
+		db, err = sql.Open("postgres", connStr)
+		if err == nil {
+			err = db.Ping()
+		}
+		if err == nil {
+			fmt.Println("Connected to Database!")
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Hello, Professional Server! (Go + Nginx + Postgres)\n")
+	})
+
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if db != nil &amp;&amp; db.Ping() == nil {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "OK - Database Connected\n")
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Error - Database Connection Failed\n")
+		}
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+EOF</code></pre>
+        </div>
+
+        <h3>5.4. Dockerfile の作成 (マルチステージビルド)</h3>
+        <p>ビルド環境と実行環境を分離し、イメージサイズを最小化する。</p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># Dockerfile の作成
+cat &lt;&lt; 'EOF' &gt; app/Dockerfile
+# ビルドステージ
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+COPY main.go .
+RUN go mod init myapp &amp;&amp; go get github.com/lib/pq &amp;&amp; go build -o main main.go
+
+# 実行用軽量ステージ
+FROM alpine:latest
+WORKDIR /root/
+COPY --from=builder /app/main .
+EXPOSE 8080
+CMD ["./main"]
+EOF</code></pre>
+        </div>
+
+        <h3>5.5. Nginx設定とSSL証明書の生成</h3>
+        <p>
+            HTTP通信をHTTPSへリダイレクトし、Goアプリへプロキシする。今回は自己署名証明書を発行する。
+        </p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># Nginx設定ファイルの作成
+cat &lt;&lt; 'EOF' &gt; nginx/nginx.conf
+events {
+    worker_connections 1024;
+}
+
+http {
+    server {
+        listen 80;
+        server_name _;
+        return 301 https://$host$request_uri;
+    }
+
+    server {
+        listen 443 ssl;
+        server_name _;
+
+        ssl_certificate /etc/nginx/certs/server.crt;
+        ssl_certificate_key /etc/nginx/certs/server.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+
+        location / {
+            proxy_pass http://app:8080;
+            proxy_set_header Host $host;
+        }
+    }
+}
+EOF
+
+# 自己署名証明書の生成
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout nginx/certs/server.key \
+  -out nginx/certs/server.crt \
+  -subj "/C=JP/ST=Tokyo/L=Chiyoda/O=Server/CN=localhost" 2&gt;/dev/null</code></pre>
+        </div>
+
+        <h3>5.6. Docker Compose によるコンテナ定義</h3>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># docker-compose.yml の作成
+cat &lt;&lt; 'EOF' &gt; docker-compose.yml
+services:
+  app:
+    build: ./app
+    environment:
+      - DB_HOST=db
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    env_file:
+      - .env
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  web:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  db-data:
+EOF</code></pre>
+        </div>
+
+        <h2>6. サービスの起動／永続化</h2>
+        <p>
+            定義したComposeファイルを用いてコンテナをバックグラウンドで起動する。<code
+                >restart: unless-stopped</code
+            >
+            を指定しているため、OS再起動時も自動的にコンテナが復帰する。
+        </p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># イメージのビルドとコンテナのバックグラウンド起動
+docker compose up -d --build
+
+# コンテナの起動状態確認
+docker compose ps</code></pre>
+        </div>
+
+        <h2>7. 動作確認と検証</h2>
+        <p>
+            以下のコマンドを実行し、期待されるレスポンスが返却されるか確認する。自己署名証明書を使用しているため、curlコマンドには
+            <code>-k</code> (insecure) オプションを付与する。
+        </p>
+        <div class="code-container">
+            <button class="copy-btn">コピー</button>
+            <pre><code># 疎通確認
+curl -k https://localhost/
+
+# ヘルスチェック（DB接続確認）
+curl -k https://localhost/health
+
+# HTTPからHTTPSへのリダイレクト確認
+curl -I http://localhost/</code></pre>
+        </div>
+
+        <h2>8. トラブルシューティング</h2>
+        <ul>
+            <li>
+                <strong
+                    >ポート競合エラー (bind: address already in use):</strong
+                >
+                既にApache等別のWebサーバが起動している可能性がある。<code
+                    >sudo systemctl stop apache2</code
+                >
+                などで停止してから再度
+                <code>docker compose up</code> を実行する。
+            </li>
+            <li>
+                <strong>DB接続エラー:</strong>
+                コンテナ内のアプリログを確認する。<code
+                    >docker compose logs app</code
+                >
+                を実行し、環境変数の綴りやパスワードが
+                <code>.env</code> と一致しているか確認する。
+            </li>
+            <li>
+                <strong>権限エラー (permission denied):</strong>
+                dockerコマンド実行時にエラーが出る場合は、ユーザーのグループ追加が反映されていない。一度ログアウトするか、<code
+                    >newgrp docker</code
+                >
+                を実行する。
+            </li>
+        </ul>
+
+        <h2>9. セキュリティ配慮事項</h2>
+        <ul>
+            <li>
+                <strong>権限最小化とパスワード管理:</strong>
+                データベースのパスワード等はソースに直書きせず
+                <code>.env</code> に記述し、パーミッションを
+                <code>600</code> に制限した。
+            </li>
+            <li>
+                <strong>不要ポートの閉鎖:</strong>
+                DBおよびAppコンテナはホストへポートをマッピングせず、Nginxコンテナ経由でのみアクセス可能とした。UFWによりOSレベルでもポートを制限している。
+            </li>
+            <li>
+                <strong>暗号化スイートの指定:</strong>
+                Nginx設定にて古いTLSバージョンを無効化し、TLSv1.2およびTLSv1.3のみを許可した。
+            </li>
+        </ul>
+
+        <h2>10. 参考資料</h2>
+        <ul>
+            <li>
+                Docker Documentation:
+                <a href="https://docs.docker.com/" target="_blank"
+                    >https://docs.docker.com/</a
+                >
+            </li>
+            <li>
+                Go Documentation:
+                <a href="https://go.dev/doc/" target="_blank"
+                    >https://go.dev/doc/</a
+                >
+            </li>
+            <li>
+                NGINX Reverse Proxy:
+                <a
+                    href="https://docs.nginx.com/nginx/admin-guide/web-server/reverse-proxy/"
+                    target="_blank"
+                    >https://docs.nginx.com/nginx/admin-guide/web-server/reverse-proxy/</a
+                >
+            </li>
+        </ul>
+
+        <script>
+            document.querySelectorAll(".copy-btn").forEach((button) => {
+                button.addEventListener("click", function () {
+                    const codeBlock =
+                        this.nextElementSibling.querySelector("code") ||
+                        this.nextElementSibling;
+                    navigator.clipboard
+                        .writeText(codeBlock.innerText)
+                        .then(() => {
+                            const originalText = this.innerText;
+                            this.innerText = "コピー完了！";
+                            this.classList.add("copied");
+                            setTimeout(() => {
+                                this.innerText = originalText;
+                                this.classList.remove("copied");
+                            }, 2000);
+                        })
+                        .catch((err) => {
+                            console.error("コピーに失敗しました", err);
+                            alert("クリップボードへのコピーに失敗しました。");
+                        });
+                });
+            });
+        </script>
+    </body>
+</html>
